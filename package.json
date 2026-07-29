@@ -1,0 +1,21 @@
+{
+  "name": "camofox-twkan-check",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit",
+    "crawl": "npm run build && node --env-file-if-exists=.env dist/src/cli/index.js",
+    "start:camofox": "camofox-browser",
+    "stop:camofox": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stop-camofox.ps1",
+    "test": "npm run build && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@askjo/camofox-browser": "^1.13.0",
+    "yaml": "^2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "typescript": "^7.0.2"
+  }
+}

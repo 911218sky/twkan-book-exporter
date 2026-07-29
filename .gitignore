@@ -1,0 +1,17 @@
+# Node.js 安裝與編譯產物
+node_modules/
+dist/
+
+# 使用者下載內容與中斷時的暫存檔
+output/
+*.part
+
+# 本機個人設定；範例檔仍納入版本控制
+twkanexporter.yaml
+.env
+
+# 執行環境暫存
+.omo/
+*.log
+.DS_Store
+Thumbs.db
