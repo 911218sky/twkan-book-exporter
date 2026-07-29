@@ -10,17 +10,15 @@ async function main(signal: AbortSignal): Promise<void> {
   // 先讀 YAML，之後由同一組命令列參數覆寫，避免設定檔吃掉臨時調整。
   const options = parseOptions(arguments_, await loadCrawlConfig(configPathFromArguments(arguments_)))
   const progress = new ProgressReporter()
-  let sessionResets = 0
   let result: Awaited<ReturnType<typeof exportBook>>
   while (true) {
     try {
       result = await exportBook(options, progress.render.bind(progress), signal)
       break
     } catch (error) {
-      if (!isCamofoxSessionReset(error) || sessionResets >= 30) throw error
-      sessionResets += 1
+      if (!isCamofoxSessionReset(error)) throw error
       progress.reset()
-      console.error(`Camofox is restarting now; resuming completed chapters (${sessionResets}/30).`)
+      console.error("\nCamofox is restarting now; resuming completed chapters.")
     }
   }
   console.log(`Export complete. Verified ${result.total}/${result.total} chapters. Cache ${result.cached}. Downloaded ${result.written}.`)
