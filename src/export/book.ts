@@ -26,6 +26,11 @@ type ExportResult = {
 
 export type ProgressCallback = (cached: number, completed: number, total: number) => void
 
+export function navigationSlot(nextNavigationAt: number, now: number, delayMs: number): { readonly nextNavigationAt: number; readonly waitMs: number } {
+  const readyAt = Math.max(nextNavigationAt, now)
+  return { nextNavigationAt: readyAt + delayMs, waitMs: readyAt - now }
+}
+
 function requireActiveCrawl(signal: AbortSignal | undefined): void {
   if (signal?.aborted === true) throw new CrawlError("Crawl interrupted.")
 }
@@ -44,10 +49,17 @@ export function cacheFilenameNumber(value: string): number | undefined {
   return match?.[1] === undefined ? undefined : Number(match[1])
 }
 
-async function cachedChapterNumbers(directory: string, planned: readonly PlannedChapter[]): Promise<ReadonlySet<number>> {
+export function cacheBelongsToBook(metadataText: string, title: string): boolean {
+  return metadataText.split(/\r?\n/, 1)[0] === title
+}
+
+async function cachedChapterNumbers(directory: string, planned: readonly PlannedChapter[], title: string): Promise<ReadonlySet<number>> {
   const expected = new Set(planned.map((chapter) => chapter.number))
   const cached = new Set<number>()
   const entries = await readdir(directory)
+  if (!entries.includes(metadataFilename)) return cached
+  const metadataText = await readFile(path.join(directory, metadataFilename), "utf8")
+  if (!cacheBelongsToBook(metadataText, title)) return cached
   for (const entry of entries) {
     const number = cacheFilenameNumber(entry)
     if (number === undefined) continue
@@ -111,8 +123,9 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
   const browser = await Camofox.connect()
   let tabId: string | undefined
   let closePromise: Promise<void> | undefined
+  let restartBrowser = false
   const closeBrowser = (): Promise<void> => {
-    if (closePromise === undefined) closePromise = browser.close(tabId)
+    if (closePromise === undefined) closePromise = browser.close(tabId, restartBrowser)
     return closePromise
   }
   const closeOnInterrupt = (): void => { void closeBrowser() }
@@ -122,20 +135,21 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
     tabId = (await browser.createTab(options.bookUrl)).tabId
     await browser.navigate(tabId, options.bookUrl)
     const metadata = bookMetadata(await browser.evaluate(tabId, bookMetadataExpression))
-    await writeBookMetadata(options.outputDirectory, metadata)
     await browser.navigate(tabId, chapterIndexUrl(options.bookUrl))
     const planned = chapterLinks(chapterUrls(await browser.evaluate(tabId, completeLinksExpression)))
       .slice(0, options.limit)
       .map((link, index): PlannedChapter => ({ link, number: index + 1 }))
       .filter((chapter) => !options.ignoredChapters.has(chapter.number))
     if (planned.length === 0) throw new CrawlError("The book page did not contain chapters to export.")
-    const cached = await cachedChapterNumbers(options.outputDirectory, planned)
+    const cached = await cachedChapterNumbers(options.outputDirectory, planned, metadata.title)
+    await writeBookMetadata(options.outputDirectory, metadata)
     const pending = planned.filter((chapter) => !cached.has(chapter.number))
     reportProgress(cached.size, cached.size, planned.length)
     if (tabId === undefined) throw new CrawlError("Camofox did not create the initial tab.")
     const workerCount = Math.min(options.concurrency, pending.length)
     const tabIds = workerCount === 0 ? [] : [tabId, ...(await Promise.all(Array.from({ length: workerCount - 1 }, () => browser.createTab()))).map((tab) => tab.tabId)]
     let nextIndex = 0
+    let nextNavigationAt = 0
     let written = 0
     const worker = async (activeTabId: string): Promise<void> => {
       while (nextIndex < pending.length) {
@@ -146,6 +160,9 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
         let lastError: Error | undefined
         for (let attempt = 1; attempt <= options.retries; attempt += 1) {
           try {
+            const slot = navigationSlot(nextNavigationAt, Date.now(), options.delayMs)
+            nextNavigationAt = slot.nextNavigationAt
+            if (slot.waitMs > 0) await delay(slot.waitMs)
             await browser.navigate(activeTabId, item.link.url)
             await writeChapter(options.outputDirectory, requireChapter(await browser.evaluate(activeTabId, chapterExpression), item.number))
             written += 1
@@ -154,17 +171,20 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
             break
           } catch (error) {
             requireActiveCrawl(signal)
+            if (Camofox.requiresRestart(error)) throw error
             lastError = error instanceof Error ? error : new CrawlError("Unknown chapter export failure.")
             if (attempt < options.retries) await delay(options.delayMs * attempt)
           }
         }
         if (lastError !== undefined) throw lastError
-        await delay(options.delayMs)
       }
     }
     await Promise.all(tabIds.map(worker))
     requireActiveCrawl(signal)
     return { cached: cached.size, mergedFile: await mergeChapters(options.outputDirectory, metadata, planned), total: planned.length, written }
+  } catch (error) {
+    restartBrowser = Camofox.requiresRestart(error)
+    throw error
   } finally {
     signal?.removeEventListener("abort", closeOnInterrupt)
     await closeBrowser()

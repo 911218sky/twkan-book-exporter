@@ -48,9 +48,9 @@ export function bookMetadata(value: unknown): BookMetadata {
   return {
     author,
     category,
-    keywords: typeof value["keywords"] === "string" ? value["keywords"].trim() : "",
+    keywords: typeof value["keywords"] === "string" ? normalizeContent(value["keywords"]) : "",
     status: typeof value["status"] === "string" ? value["status"].trim() : "",
-    synopsis: typeof value["synopsis"] === "string" ? value["synopsis"].trim() : "",
+    synopsis: typeof value["synopsis"] === "string" ? normalizeContent(value["synopsis"]) : "",
     title,
   }
 }
@@ -76,8 +76,8 @@ export function chapterUrls(value: unknown): readonly string[] {
 
 export function normalizeContent(value: string): string {
   // 同時覆蓋一般文字與 Unicode 轉義形式，避免網站推廣字樣混入章節正文。
-  const knownMarkers = /google\s*(?:\u641c\u7d22|\u641c\u5c0b)?\s*twkan|\btwkan\.com\b|\u672c\u66f8\u9996\u767c|\u53f0\u7063\u5c0f\u8aaa\u7db2|promoted\s+content/i
-  const noise = /google\s*(?:搜索|搜尋)\s*twkan|twkan\.com|本書首發|台灣小說網|promoted\s+content/i
+  const knownMarkers = /google\s*(?:\u641c\u7d22|\u641c\u5c0b)?\s*twkan|\btwkan\b|\u672c\u66f8\u9996\u767c|\u53f0\u7063\u5c0f\u8aaa\u7db2|promoted\s+content/i
+  const noise = /google\s*(?:搜索|搜尋)\s*twkan|twkan|本書首發|台灣小說網|promoted\s+content/i
   return value.split("\n").filter((line) => !noise.test(line.normalize("NFKC")) && !knownMarkers.test(line.normalize("NFKC"))).join("\n").replace(/\n{3,}/g, "\n\n").trim()
 }
 

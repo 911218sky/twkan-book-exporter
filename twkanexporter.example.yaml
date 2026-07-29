@@ -3,9 +3,9 @@
 book: "https://twkan.com/book/90206/index.html"
 output: "output/90206"
 
-# 3 個分頁與 1.5 秒等待是速度、記憶體使用量與網站穩定性的折衷。
+# 3 個分頁與 4.5 秒等待是速度、記憶體使用量與網站穩定性的折衷。
 concurrency: 3
-delayMs: 1500
+delayMs: 4500
 retries: 3
 
 # 只抓前幾章，適合先確認輸出。

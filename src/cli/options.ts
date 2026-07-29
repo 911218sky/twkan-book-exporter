@@ -20,6 +20,13 @@ function positive(value: string | number | undefined, fallback: number, name: st
   return number
 }
 
+function nonNegative(value: string | number | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback
+  const number = Number(value)
+  if (!Number.isInteger(number) || number < 0) throw new CrawlError(`${name} must be a non-negative integer.`)
+  return number
+}
+
 // 忽略清單接受逗號分隔的章號與閉區間，例如 1-2,8；設定檔與 CLI 共用此解析規則。
 function ignoredChapters(value: string | undefined): ReadonlySet<number> {
   if (value === undefined || value === "") return new Set()
@@ -44,7 +51,7 @@ function ignoredChapters(value: string | undefined): ReadonlySet<number> {
 
 export function parseOptions(arguments_: readonly string[], config: CrawlConfig = {}): CrawlOptions {
   const { positionals, values } = parseArgs({
-    args: arguments_, allowPositionals: true,
+    args: arguments_.filter((argument) => argument !== "--"), allowPositionals: true,
     options: { concurrency: { short: "c", type: "string" }, config: { type: "string" }, delayMs: { type: "string" }, ignore: { short: "x", type: "string" }, limit: { type: "string" }, output: { short: "o", type: "string" }, retries: { type: "string" } }, strict: true,
   })
   const input = positionals[0] ?? config.book
@@ -52,7 +59,7 @@ export function parseOptions(arguments_: readonly string[], config: CrawlConfig 
   return {
     bookUrl: bookUrl(input),
     concurrency: positive(values.concurrency ?? config.concurrency, 3, "Concurrency"),
-    delayMs: positive(values.delayMs ?? config.delayMs, 1_500, "Delay"),
+    delayMs: nonNegative(values.delayMs ?? config.delayMs, 4_500, "Delay"),
     ignoredChapters: ignoredChapters(values.ignore ?? config.ignore),
     limit: positive(values.limit ?? config.limit, Number.POSITIVE_INFINITY, "Limit"),
     outputDirectory: values.output ?? config.output ?? "output",

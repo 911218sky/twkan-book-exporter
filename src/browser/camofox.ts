@@ -1,15 +1,26 @@
 import { spawn } from "node:child_process"
 import type { ChildProcess } from "node:child_process"
 import { createRequire } from "node:module"
+import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { CrawlError } from "../core/errors.js"
 
 const require = createRequire(import.meta.url)
 const origin = "http://127.0.0.1:9377"
+const chapterNavigationTimeoutMs = 5_000
 type Tab = { readonly tabId: string }
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+export async function waitForProcessExit(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null) return
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new CrawlError("Camofox did not exit within 10 seconds.")), 10_000)
+    child.once("error", (error) => { clearTimeout(timeout); reject(error) })
+    child.once("exit", () => { clearTimeout(timeout); resolve() })
+  })
 }
 
 export class Camofox {
@@ -21,7 +32,7 @@ export class Camofox {
   public static async connect(): Promise<Camofox> {
     if (await Camofox.healthy()) return new Camofox(undefined)
     const server = spawn(process.execPath, [require.resolve("@askjo/camofox-browser/server.js")], {
-      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: process.env.BROWSER_IDLE_TIMEOUT_MS ?? "10000", CAMOFOX_BIND_HOST: process.env.CAMOFOX_BIND_HOST ?? "127.0.0.1", CAMOFOX_CRASH_REPORT_ENABLED: process.env.CAMOFOX_CRASH_REPORT_ENABLED ?? "false", CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", MAX_CONCURRENT_PER_USER: process.env.MAX_CONCURRENT_PER_USER ?? "3", MAX_SESSIONS: process.env.MAX_SESSIONS ?? "1", MAX_TABS_GLOBAL: process.env.MAX_TABS_GLOBAL ?? "3", MAX_TABS_PER_SESSION: process.env.MAX_TABS_PER_SESSION ?? "3", SESSION_TIMEOUT_MS: process.env.SESSION_TIMEOUT_MS ?? "60000", TAB_INACTIVITY_MS: process.env.TAB_INACTIVITY_MS ?? "60000" },
+      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: process.env.BROWSER_IDLE_TIMEOUT_MS ?? "120000", CAMOFOX_BIND_HOST: process.env.CAMOFOX_BIND_HOST ?? "127.0.0.1", CAMOFOX_CRASH_REPORT_ENABLED: process.env.CAMOFOX_CRASH_REPORT_ENABLED ?? "false", CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", HANDLER_TIMEOUT_MS: process.env.HANDLER_TIMEOUT_MS ?? "60000", MAX_CONCURRENT_PER_USER: process.env.MAX_CONCURRENT_PER_USER ?? "3", MAX_SESSIONS: process.env.MAX_SESSIONS ?? "1", MAX_TABS_GLOBAL: process.env.MAX_TABS_GLOBAL ?? "3", MAX_TABS_PER_SESSION: process.env.MAX_TABS_PER_SESSION ?? "3", NAVIGATE_TIMEOUT_MS: process.env.NAVIGATE_TIMEOUT_MS ?? "55000", SESSION_TIMEOUT_MS: process.env.SESSION_TIMEOUT_MS ?? "180000", TAB_INACTIVITY_MS: process.env.TAB_INACTIVITY_MS ?? "180000" },
       stdio: "ignore", windowsHide: true,
     })
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -32,6 +43,22 @@ export class Camofox {
     throw new CrawlError("Camofox did not become ready within 30 seconds.")
   }
 
+  public static isMissingTab(error: unknown): boolean {
+    return error instanceof CrawlError && (error.message.includes("Tab no longer exists") || error.message.includes("Tab not found"))
+  }
+
+  public static isAccessDenied(error: unknown): boolean {
+    return error instanceof CrawlError && error.message.includes("HTTP 403")
+  }
+
+  public static isNavigationTimeout(error: unknown): boolean {
+    return error instanceof CrawlError && error.message.includes("navigation timed out")
+  }
+
+  public static requiresRestart(error: unknown): boolean {
+    return Camofox.isAccessDenied(error) || Camofox.isMissingTab(error) || Camofox.isNavigationTimeout(error)
+  }
+
   public async createTab(url?: string): Promise<Tab> {
     const body = url === undefined ? { sessionKey: "crawler", userId: this.userId } : { sessionKey: "crawler", url, userId: this.userId }
     const value = await this.request("/tabs", { method: "POST", body })
@@ -39,7 +66,9 @@ export class Camofox {
     return { tabId: value["tabId"] }
   }
 
-  public async navigate(tabId: string, url: string): Promise<void> { await this.request(`/tabs/${tabId}/navigate`, { method: "POST", body: { url, userId: this.userId } }) }
+  public async navigate(tabId: string, url: string): Promise<void> {
+    await this.request(`/tabs/${tabId}/navigate`, { body: { url, userId: this.userId }, method: "POST", timeoutMs: chapterNavigationTimeoutMs })
+  }
 
   public async evaluate(tabId: string, expression: string): Promise<unknown> {
     const value = await this.request(`/tabs/${tabId}/evaluate`, { method: "POST", body: { expression, userId: this.userId } })
@@ -47,28 +76,64 @@ export class Camofox {
     return value["result"]
   }
 
-  public async close(tabId: string | undefined): Promise<void> {
+  public async close(tabId: string | undefined, restartBrowser = false): Promise<void> {
+    if (restartBrowser) {
+      await Camofox.restart(this.server)
+      return
+    }
     try {
       if (tabId !== undefined) await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(this.userId)}`, { method: "DELETE" })
     } catch (error) {
-      if (!(error instanceof CrawlError) || (!error.message.includes("Tab no longer exists") && !error.message.includes("Tab not found"))) throw error
+      if (!Camofox.isMissingTab(error)) throw error
     } finally {
       try {
         await this.request(`/sessions/${this.userId}`, { method: "DELETE" })
       } finally {
-        this.server?.kill()
+        await Camofox.stopOwnedServer(this.server)
       }
     }
+  }
+
+  private static async restart(server: ChildProcess | undefined): Promise<void> {
+    if (server !== undefined) {
+      await Camofox.stopOwnedServer(server)
+      return
+    }
+    if (process.platform !== "win32") throw new CrawlError("Cannot restart an externally started Camofox server on this platform.")
+    const script = path.resolve(process.cwd(), "scripts", "stop-camofox.ps1")
+    const stopProcess = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { stdio: "ignore", windowsHide: true })
+    await waitForProcessExit(stopProcess)
+    if (stopProcess.exitCode !== 0) throw new CrawlError("Failed to stop the existing Camofox browser.")
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (!(await Camofox.healthy())) return
+      await delay(100)
+    }
+    throw new CrawlError("Camofox remained available after the browser restart.")
+  }
+
+  private static async stopOwnedServer(server: ChildProcess | undefined): Promise<void> {
+    if (server === undefined || server.exitCode !== null) return
+    server.kill()
+    await waitForProcessExit(server)
   }
 
   private static async healthy(): Promise<boolean> {
     try { return (await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1_000) })).ok } catch { return false }
   }
 
-  private async request(path: string, init: { readonly body?: unknown; readonly method: string }): Promise<unknown> {
-    const response = init.body === undefined
-      ? await fetch(`${origin}${path}`, { method: init.method, signal: AbortSignal.timeout(35_000) })
-      : await fetch(`${origin}${path}`, { body: JSON.stringify(init.body), headers: { "content-type": "application/json" }, method: init.method, signal: AbortSignal.timeout(35_000) })
+  private async request(path: string, init: { readonly body?: unknown; readonly method: string; readonly timeoutMs?: number }): Promise<unknown> {
+    const timeoutMs = init.timeoutMs ?? 70_000
+    let response: Response
+    try {
+      response = init.body === undefined
+        ? await fetch(`${origin}${path}`, { method: init.method, signal: AbortSignal.timeout(timeoutMs) })
+        : await fetch(`${origin}${path}`, { body: JSON.stringify(init.body), headers: { "content-type": "application/json" }, method: init.method, signal: AbortSignal.timeout(timeoutMs) })
+    } catch (error) {
+      if (init.timeoutMs !== undefined && error instanceof Error && error.name === "TimeoutError") {
+        throw new CrawlError(`Camofox navigation timed out after ${init.timeoutMs}ms.`)
+      }
+      throw error
+    }
     const body: unknown = await response.json()
     if (!response.ok) {
       const message = isRecord(body) && typeof body["error"] === "string" ? body["error"] : `HTTP ${response.status}`

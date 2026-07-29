@@ -5,7 +5,9 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import { loadCrawlConfig } from "../src/cli/config.js"
 import { parseOptions } from "../src/cli/options.js"
-import { cacheFilenameNumber, bookMetadataText, exportBook } from "../src/export/book.js"
+import { isCamofoxSessionReset } from "../src/cli/session-recovery.js"
+import { Camofox } from "../src/browser/camofox.js"
+import { cacheBelongsToBook, cacheFilenameNumber, bookMetadataText, exportBook, navigationSlot } from "../src/export/book.js"
 import { bookMetadata, bookTitle, bookUrl, chapterIndexUrl, chapterLinks, normalizeContent } from "../src/twkan/novel.js"
 import { CrawlError } from "../src/core/errors.js"
 
@@ -29,6 +31,25 @@ test("bookMetadata reads the public book-page details", () => {
     synopsis: "\u795e\u79d8\uff0c\u7d55\u671b\uff0c\u75db\u82e6\uff0c\u8150\u673d\u3002",
     title: "\u8150\u673d\u4e16\u754c",
   })
+})
+
+test("bookMetadata removes site promotion from book information", () => {
+  // Given: public book metadata containing the site's promotion text
+  const value = {
+    author: "滾開",
+    category: "玄幻奇幻",
+    keywords: "腐朽世界twkan,腐朽世界無彈窗",
+    status: "232.59萬字 | 連載",
+    synopsis: "台灣小說網為您提供滾開創作的小說。",
+    title: "腐朽世界",
+  }
+
+  // When: the crawler parses the book information
+  const metadata = bookMetadata(value)
+
+  // Then: promotion fields are excluded from the saved information file
+  assert.equal(metadata.synopsis, "")
+  assert.equal(metadata.keywords, "")
 })
 
 test("bookMetadataText creates the first merged information document", () => {
@@ -60,15 +81,59 @@ test("cacheFilenameNumber recognizes a completed chapter filename", () => {
   assert.equal(number, 24)
 })
 
+test("navigationSlot spaces concurrent chapter navigations", () => {
+  assert.deepEqual(navigationSlot(0, 1_000, 1_500), { nextNavigationAt: 2_500, waitMs: 0 })
+  assert.deepEqual(navigationSlot(2_500, 1_100, 1_500), { nextNavigationAt: 4_000, waitMs: 1_400 })
+})
+
+test("cacheBelongsToBook rejects chapters from a different book", () => {
+  // Given: an output folder whose information file belongs to another novel
+  const metadata = "你做的副本是給人玩的嗎？\n\n作者：獻歌\n"
+
+  // When: the crawler prepares to resume 腐朽世界
+  const belongs = cacheBelongsToBook(metadata, "腐朽世界")
+
+  // Then: it starts without using the unrelated chapter cache
+  assert.equal(belongs, false)
+})
+
+test("isCamofoxSessionReset restarts the browser for a discarded tab", () => {
+  // Given: Camofox discarded a tab while the crawler was reading a chapter
+  const error = new CrawlError("Camofox POST /tabs/abc/evaluate failed: Tab no longer exists")
+
+  // When: the retry loop classifies the error
+  const reset = isCamofoxSessionReset(error)
+
+  // Then: the crawler restarts Camofox before it continues from cache
+  assert.equal(reset, true)
+  assert.equal(Camofox.isMissingTab(error), true)
+})
+
+test("isCamofoxSessionReset recognizes a Twkan temporary rejection", () => {
+  const error = new CrawlError("Camofox POST /tabs/abc/navigate failed: HTTP 403")
+  assert.equal(isCamofoxSessionReset(error), true)
+})
+
+test("isCamofoxSessionReset recognizes the five-second navigation timeout", () => {
+  const error = new CrawlError("Camofox navigation timed out after 5000ms.")
+  assert.equal(isCamofoxSessionReset(error), true)
+})
+
 test("parseOptions uses three paced concurrent tabs", () => {
   const options = parseOptions(["90206"])
   assert.equal(options.concurrency, 3)
-  assert.equal(options.delayMs, 1_500)
+  assert.equal(options.delayMs, 4_500)
 })
 
 test("parseOptions accepts an ignored chapter list and ranges", () => {
   const options = parseOptions(["90206", "--ignore", "1-2,5,8-9"])
   assert.deepEqual([...options.ignoredChapters], [1, 2, 5, 8, 9])
+})
+
+test("parseOptions accepts npm's extra argument separator", () => {
+  const options = parseOptions(["90206", "--", "--limit", "10", "--output", "output/test"])
+  assert.equal(options.limit, 10)
+  assert.equal(options.outputDirectory, "output/test")
 })
 
 test("exportBook stops before opening Camofox when interrupted", async () => {
