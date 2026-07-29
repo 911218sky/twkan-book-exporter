@@ -39,14 +39,18 @@ function filename(number: number, title: string): string {
   return `${String(number).padStart(4, "0")}-${safe}.txt`
 }
 
+export function cacheFilenameNumber(value: string): number | undefined {
+  const match = value.match(/^(\d{4})-.+\.txt$/)
+  return match?.[1] === undefined ? undefined : Number(match[1])
+}
+
 async function cachedChapterNumbers(directory: string, planned: readonly PlannedChapter[]): Promise<ReadonlySet<number>> {
   const expected = new Set(planned.map((chapter) => chapter.number))
   const cached = new Set<number>()
   const entries = await readdir(directory)
   for (const entry of entries) {
-    const match = entry.match(/^(\\d{4})-.+\\.txt$/)
-    if (match?.[1] === undefined) continue
-    const number = Number(match[1])
+    const number = cacheFilenameNumber(entry)
+    if (number === undefined) continue
     // 只有目前計畫內的非空檔才算快取，避免舊檔或中斷產物影響續跑。
     if (expected.has(number) && (await stat(path.join(directory, entry))).size > 0) cached.add(number)
   }

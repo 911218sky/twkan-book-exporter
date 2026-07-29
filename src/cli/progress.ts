@@ -2,6 +2,8 @@
 export class ProgressReporter {
   private lastLogged = -1
 
+  public reset(): void { this.lastLogged = -1 }
+
   public render(cached: number, completed: number, total: number): void {
     const message = `Progress ${completed}/${total} | cache ${cached} | downloaded ${completed - cached}`
     if (process.stderr.isTTY === true) {

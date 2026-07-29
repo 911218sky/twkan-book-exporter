@@ -20,6 +20,7 @@ async function main(signal: AbortSignal): Promise<void> {
       const resetByCamofox = error instanceof CrawlError && (error.message.includes("Tab no longer exists") || error.message.includes("Tab not found"))
       if (!resetByCamofox || sessionResets >= 30) throw error
       sessionResets += 1
+      progress.reset()
       // 單一分頁逾時時 Camofox 會重建 session；既有章節檔可讓下一輪只補未完成部分。
       console.error(`Camofox reset its session; resuming completed chapters (${sessionResets}/30).`)
       await delay(5_000)

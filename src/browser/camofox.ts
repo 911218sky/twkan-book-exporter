@@ -48,9 +48,17 @@ export class Camofox {
   }
 
   public async close(tabId: string | undefined): Promise<void> {
-    if (tabId !== undefined) await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(this.userId)}`, { method: "DELETE" })
-    await this.request(`/sessions/${this.userId}`, { method: "DELETE" })
-    this.server?.kill()
+    try {
+      if (tabId !== undefined) await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(this.userId)}`, { method: "DELETE" })
+    } catch (error) {
+      if (!(error instanceof CrawlError) || (!error.message.includes("Tab no longer exists") && !error.message.includes("Tab not found"))) throw error
+    } finally {
+      try {
+        await this.request(`/sessions/${this.userId}`, { method: "DELETE" })
+      } finally {
+        this.server?.kill()
+      }
+    }
   }
 
   private static async healthy(): Promise<boolean> {

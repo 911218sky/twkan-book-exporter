@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import { loadCrawlConfig } from "../src/cli/config.js"
 import { parseOptions } from "../src/cli/options.js"
-import { bookMetadataText, exportBook } from "../src/export/book.js"
+import { cacheFilenameNumber, bookMetadataText, exportBook } from "../src/export/book.js"
 import { bookMetadata, bookTitle, bookUrl, chapterIndexUrl, chapterLinks, normalizeContent } from "../src/twkan/novel.js"
 import { CrawlError } from "../src/core/errors.js"
 
@@ -47,6 +47,17 @@ test("bookMetadataText creates the first merged information document", () => {
 
   // Then: its contents form the expected leading section of the merged book
   assert.equal(information, "腐朽世界\n\n作者：滾開\n\n分類：玄幻奇幻\n\n232.59萬字 | 連載\n\n簡介：\n神秘，絕望，痛苦，腐朽。\n\n小說關鍵詞：腐朽世界無彈窗")
+})
+
+test("cacheFilenameNumber recognizes a completed chapter filename", () => {
+  // Given: an atomically completed chapter file
+  const filename = "0024-024失蹤 二.txt"
+
+  // When: cache recovery examines its filename after a Camofox reset
+  const number = cacheFilenameNumber(filename)
+
+  // Then: the chapter is available for cache reuse
+  assert.equal(number, 24)
 })
 
 test("parseOptions uses three paced concurrent tabs", () => {
