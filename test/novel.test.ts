@@ -122,7 +122,7 @@ test("isCamofoxSessionReset recognizes the five-second navigation timeout", () =
 test("parseOptions uses three paced concurrent tabs", () => {
   const options = parseOptions(["90206"])
   assert.equal(options.concurrency, 3)
-  assert.equal(options.delayMs, 4_500)
+  assert.equal(options.delayMs, 2_000)
 })
 
 test("parseOptions accepts an ignored chapter list and ranges", () => {

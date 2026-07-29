@@ -1,8 +1,9 @@
-$serverPids = Get-NetTCPConnection -LocalPort 9377 -State Listen -ErrorAction SilentlyContinue |
+$serverPids = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
+  Where-Object { $_.LocalPort -ge 9377 -and $_.LocalPort -le 9386 } |
   Select-Object -ExpandProperty OwningProcess -Unique
 
 if ($null -eq $serverPids) {
-  Write-Output "Camofox is not running on port 9377."
+  Write-Output "No managed Camofox browser is running."
   exit 0
 }
 

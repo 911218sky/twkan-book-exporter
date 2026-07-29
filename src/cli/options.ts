@@ -59,7 +59,7 @@ export function parseOptions(arguments_: readonly string[], config: CrawlConfig 
   return {
     bookUrl: bookUrl(input),
     concurrency: positive(values.concurrency ?? config.concurrency, 3, "Concurrency"),
-    delayMs: nonNegative(values.delayMs ?? config.delayMs, 4_500, "Delay"),
+    delayMs: nonNegative(values.delayMs ?? config.delayMs, 2_000, "Delay"),
     ignoredChapters: ignoredChapters(values.ignore ?? config.ignore),
     limit: positive(values.limit ?? config.limit, Number.POSITIVE_INFINITY, "Limit"),
     outputDirectory: values.output ?? config.output ?? "output",
