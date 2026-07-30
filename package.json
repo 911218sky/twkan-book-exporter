@@ -1,12 +1,36 @@
 {
-  "name": "twkan-book-exporter",
+  "name": "twkan",
+  "version": "1.0.0",
+  "description": "Download public Twkan novels as cleaned TXT files.",
+  "author": "911218sky",
+  "license": "MIT",
   "engines": { "node": ">=22" },
-  "private": true,
+  "bin": {
+    "twkan": "./dist/src/cli/index.js"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "twkanexporter.example.yaml"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/911218sky/twkan-book-exporter.git"
+  },
+  "bugs": {
+    "url": "https://github.com/911218sky/twkan-book-exporter/issues"
+  },
+  "homepage": "https://github.com/911218sky/twkan-book-exporter#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "scripts": {
     "build": "tsc",
     "check": "tsc --noEmit",
     "crawl": "npm run build && node dist/src/cli/index.js",
+    "prepack": "npm run build",
     "start:camofox": "camofox-browser",
     "stop:camofox": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/stop-camofox.ps1",
     "test": "npm run build && node --test dist/test/*.test.js"

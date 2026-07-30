@@ -2,6 +2,7 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promi
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { Camofox } from "../browser/camofox.js"
+import { createWorkerTabs } from "../browser/worker-tabs.js"
 import type { CrawlOptions } from "../cli/options.js"
 import { BrowserRestartRequiredError, CrawlError } from "../core/errors.js"
 import { ChapterContentError, bookMetadata, chapterIndexUrl, chapterLinks, chapterUrls, requireChapter } from "../twkan/novel.js"
@@ -157,7 +158,7 @@ export async function exportBook(
     reportProgress(cached.size, cached.size, planned.length)
     if (tabId === undefined) throw new CrawlError("Camofox did not create the initial tab.")
     const workerCount = Math.min(options.concurrency, pending.length)
-    const tabIds = workerCount === 0 ? [] : [tabId, ...(await Promise.all(Array.from({ length: workerCount - 1 }, () => browser.createTab()))).map((tab) => tab.tabId)]
+    const tabIds = workerCount === 0 ? [] : [tabId, ...await createWorkerTabs(workerCount - 1, browser.createTab.bind(browser))]
     let nextIndex = 0
     let nextNavigationAt = 0
     let written = 0

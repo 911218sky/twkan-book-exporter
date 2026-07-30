@@ -1,3 +1,5 @@
+#!/usr/bin/env node
+
 import { exportBook } from "../export/book.js"
 import { CrawlError } from "../core/errors.js"
 import { configPathFromArguments, loadCrawlConfig } from "./config.js"
