@@ -58,10 +58,16 @@ npm run crawl -- 90206 -- --output output/90206
 可選擇建立自己的設定檔：
 
 ```powershell
-Copy-Item twkanexporter.example.yaml twkanexporter.yaml
+Copy-Item "$(npm root -g)\twkan\twkanexporter.example.yaml" ".\twkanexporter.yaml"
 ```
 
-`twkanexporter.yaml` 可調整 Camofox 的連線埠、逾時、分頁與 session 上限。未建立時，程式會自動讀取 `twkanexporter.example.yaml` 的預設值。
+`twkanexporter.yaml` 可調整 Camofox 的連線埠、逾時、分頁與 session 上限。未建立設定檔時，程式會使用內建預設值。
+
+使用自訂檔名或其他位置的設定檔：
+
+```powershell
+twkan --config my-settings.yaml
+```
 
 若 Camofox 意外未關閉：
 
