@@ -22,7 +22,6 @@ export class ProgressReporter {
   // 固定程式啟動時的快取基準，避免重啟後把本次下載重新計入 cache。
   private initialCached: number | undefined
   private completed = 0
-  private replacingTabs = 0
   private lastLogged = -1
   private restartingNow = false
   private total = 0
@@ -49,17 +48,6 @@ export class ProgressReporter {
   public restarting(reason: string): void {
     this.writeProgress(`${this.message()} [${reason}，正在重啟 Camofox...]`, true)
     this.restartingNow = true
-  }
-
-  public replacingTab(reason: string): void {
-    this.replacingTabs += 1
-    this.writeProgress(`${this.message()} [${reason}，3 秒後更換分頁...]`, true)
-    this.restartingNow = true
-  }
-
-  public tabReady(): void {
-    this.replacingTabs = Math.max(0, this.replacingTabs - 1)
-    if (this.replacingTabs === 0) this.resumed()
   }
 
   public resumed(): void {

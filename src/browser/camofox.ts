@@ -15,10 +15,6 @@ export function sessionIndexForTab(tabOrdinal: number, sessionCount: number): nu
   return tabOrdinal % sessionCount
 }
 
-export function replacementGeneration(tabGeneration: number, sessionGeneration: number): number {
-  return tabGeneration === sessionGeneration ? sessionGeneration + 1 : sessionGeneration
-}
-
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
@@ -35,10 +31,7 @@ export async function waitForProcessExit(child: ChildProcess): Promise<void> {
 export class Camofox {
   private readonly activeUserIds = new Set<string>()
   private readonly config: ResolvedCamofoxConfig
-  private readonly replacementCooldowns = new Map<string, Promise<void>>()
-  private readonly sessionGenerations = new Map<string, number>()
   private readonly sessionUserIds: readonly string[]
-  private readonly tabGenerations = new Map<string, number>()
   private readonly tabOwners = new Map<string, string>()
   private nextTabOrdinal = 0
   // 只有本程序啟動服務時才保存 child process；既有服務必須用管理腳本關閉。
@@ -84,11 +77,10 @@ export class Camofox {
   }
 
   public static requiresRestart(error: unknown): boolean {
-    return error instanceof BrowserRestartRequiredError || Camofox.isAccessDenied(error)
-  }
-
-  public static canReplaceTab(error: unknown): boolean {
-    return Camofox.isMissingTab(error) || Camofox.isNavigationTimeout(error)
+    return error instanceof BrowserRestartRequiredError
+      || Camofox.isAccessDenied(error)
+      || Camofox.isMissingTab(error)
+      || Camofox.isNavigationTimeout(error)
   }
 
   public async createTab(url?: string): Promise<Tab> {
@@ -99,53 +91,23 @@ export class Camofox {
     return this.createTabForUser(userId, url)
   }
 
-  public async replaceTab(tabId: string): Promise<Tab> {
-    const userId = this.tabOwner(tabId)
-    const tabGeneration = this.tabGeneration(tabId)
-    const currentGeneration = this.sessionGeneration(userId)
-    const nextGeneration = replacementGeneration(tabGeneration, currentGeneration)
-    const startsRecovery = nextGeneration !== currentGeneration
-    if (startsRecovery) this.sessionGenerations.set(userId, nextGeneration)
-    const cooldown = this.replacementCooldown(userId, startsRecovery)
-    try {
-      await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(userId)}`, { method: "DELETE" })
-    } catch (error) {
-      if (!Camofox.isMissingTab(error)) throw error
-    }
-    await cooldown
-    return this.createTabForUser(userId)
-  }
-
-  private replacementCooldown(userId: string, startsRecovery: boolean): Promise<void> {
-    const activeCooldown = this.replacementCooldowns.get(userId)
-    if (activeCooldown !== undefined) return activeCooldown
-    if (!startsRecovery) return Promise.resolve()
-    const cooldown = delay(recoveryCooldownMs).finally(() => this.replacementCooldowns.delete(userId))
-    this.replacementCooldowns.set(userId, cooldown)
-    return cooldown
-  }
-
   private async createTabForUser(userId: string, url?: string): Promise<Tab> {
-    const generation = this.sessionGeneration(userId)
     const body = url === undefined ? { sessionKey: "crawler", userId } : { sessionKey: "crawler", url, userId }
     const value = await this.request("/tabs", { method: "POST", body })
     if (!isRecord(value) || typeof value["tabId"] !== "string") throw new CrawlError("Camofox did not return a tab ID.")
     this.activeUserIds.add(userId)
-    this.tabGenerations.set(value["tabId"], generation)
     this.tabOwners.set(value["tabId"], userId)
     return { tabId: value["tabId"] }
   }
 
   public async navigate(tabId: string, url: string): Promise<void> {
-    const userId = this.currentTabOwner(tabId)
+    const userId = this.tabOwner(tabId)
     await this.request(`/tabs/${tabId}/navigate`, { body: { url, userId }, method: "POST", timeoutMs: this.config.navigateTimeoutMs })
-    this.currentTabOwner(tabId)
   }
 
   public async evaluate(tabId: string, expression: string): Promise<unknown> {
-    const userId = this.currentTabOwner(tabId)
+    const userId = this.tabOwner(tabId)
     const value = await this.request(`/tabs/${tabId}/evaluate`, { method: "POST", body: { expression, userId } })
-    this.currentTabOwner(tabId)
     if (!isRecord(value)) throw new CrawlError("Camofox returned an invalid evaluation response.")
     return value["result"]
   }
@@ -201,24 +163,6 @@ export class Camofox {
   private tabOwner(tabId: string): string {
     const userId = this.tabOwners.get(tabId)
     if (userId === undefined) throw new CrawlError(`Camofox tab ${tabId} has no session owner.`)
-    return userId
-  }
-
-  private tabGeneration(tabId: string): number {
-    const generation = this.tabGenerations.get(tabId)
-    if (generation === undefined) throw new CrawlError(`Camofox tab ${tabId} has no session generation.`)
-    return generation
-  }
-
-  private sessionGeneration(userId: string): number {
-    return this.sessionGenerations.get(userId) ?? 0
-  }
-
-  private currentTabOwner(tabId: string): string {
-    const userId = this.tabOwner(tabId)
-    if (this.tabGeneration(tabId) !== this.sessionGeneration(userId)) {
-      throw new CrawlError(`Camofox tab ${tabId} no longer exists because its session was replaced.`)
-    }
     return userId
   }
 

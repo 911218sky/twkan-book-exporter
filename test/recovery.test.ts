@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import { Camofox, replacementGeneration, sessionIndexForTab } from "../src/browser/camofox.js"
+import { Camofox, sessionIndexForTab } from "../src/browser/camofox.js"
 import { isCamofoxSessionReset } from "../src/cli/session-recovery.js"
 import { ProgressReporter } from "../src/cli/progress.js"
 import { BrowserRestartRequiredError, CrawlError } from "../src/core/errors.js"
@@ -16,25 +16,16 @@ test("sessionIndexForTab balances six tabs across two sessions", () => {
   assert.deepEqual(Array.from({ length: 6 }, (_, index) => sessionIndexForTab(index, 2)), [0, 1, 0, 1, 0, 1])
 })
 
-test("one failed tab invalidates its session only once", () => {
-  const firstReplacement = replacementGeneration(0, 0)
-  const siblingReplacement = replacementGeneration(0, firstReplacement)
-
-  assert.equal(firstReplacement, 1)
-  assert.equal(siblingReplacement, 1)
-})
-
-test("a discarded tab is replaced without restarting the browser", () => {
+test("a discarded tab restarts the browser", () => {
   // Given: Camofox discarded a tab while the crawler was reading a chapter
   const error = new CrawlError("Camofox POST /tabs/abc/evaluate failed: Tab no longer exists")
 
   // When: the retry loop classifies the error
   const reset = isCamofoxSessionReset(error)
 
-  // Then: the crawler replaces only the discarded tab
-  assert.equal(reset, false)
+  // Then: the crawler restarts Camofox so stale sessions cannot accumulate
+  assert.equal(reset, true)
   assert.equal(Camofox.isMissingTab(error), true)
-  assert.equal(Camofox.canReplaceTab(error), true)
 })
 
 test("isCamofoxSessionReset recognizes a Twkan temporary rejection", () => {
@@ -49,19 +40,17 @@ test("isCamofoxSessionReset recognizes exhausted local page recovery", () => {
 
 test("isCamofoxSessionReset recognizes the five-second navigation timeout", () => {
   const error = new CrawlError("Camofox navigation timed out after 5000ms.")
-  assert.equal(Camofox.canReplaceTab(error), true)
-  assert.equal(isCamofoxSessionReset(error), false)
+  assert.equal(isCamofoxSessionReset(error), true)
 })
 
-test("a missing tab is replaced without restarting the browser", () => {
+test("a missing tab restarts the browser", () => {
   const error = new CrawlError("Camofox POST /tabs/abc/navigate failed: Tab not found")
-  assert.equal(Camofox.canReplaceTab(error), true)
-  assert.equal(isCamofoxSessionReset(error), false)
+  assert.equal(isCamofoxSessionReset(error), true)
 })
 
-test("a stale session-generation tab is replaced", () => {
+test("a stale tab error restarts the browser", () => {
   const error = new CrawlError("Camofox tab abc no longer exists because its session was replaced.")
-  assert.equal(Camofox.canReplaceTab(error), true)
+  assert.equal(isCamofoxSessionReset(error), true)
 })
 
 test("an empty chapter page is a retryable content error", () => {
@@ -102,19 +91,4 @@ test("interactive progress replaces the restart notice after Camofox resumes", (
 
   // Then: the renderer receives a clean frame without the temporary notice
   assert.equal(frames.at(-1), "Progress 167/567 | cache 129 | downloaded 38")
-})
-
-test("progress keeps the tab replacement notice until every tab is ready", () => {
-  const frames: string[] = []
-  const terminalLine = { done: () => undefined, update: (message: string) => { frames.push(message) } }
-  const progress = new ProgressReporter(() => undefined, true, terminalLine)
-  progress.render(0, 40, 60)
-  progress.replacingTab("頁面載入逾時")
-  progress.replacingTab("分頁已失效")
-
-  progress.tabReady()
-  assert.match(frames.at(-1) ?? "", /更換分頁/)
-  progress.tabReady()
-
-  assert.equal(frames.at(-1), "Progress 40/60 | cache 0 | downloaded 40")
 })

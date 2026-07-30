@@ -26,7 +26,7 @@ type ExportResult = {
 }
 
 export type ProgressCallback = (cached: number, completed: number, total: number) => void
-export type BrowserRecoveryCallback = (error: unknown, action: "restart-browser" | "replace-tab" | "tab-ready") => void
+export type BrowserRecoveryCallback = (error: unknown, action: "restart-browser") => void
 
 export function navigationSlot(nextNavigationAt: number, now: number, delayMs: number): { readonly nextNavigationAt: number; readonly waitMs: number } {
   // 所有 worker 共用同一時間軸，確保導航請求彼此仍至少相隔 delayMs。
@@ -162,8 +162,7 @@ export async function exportBook(
     let nextNavigationAt = 0
     let written = 0
     // worker 以共享索引動態領取下一章，較慢的分頁不會阻塞其他分頁。
-    const worker = async (initialTabId: string): Promise<void> => {
-      let activeTabId = initialTabId
+    const worker = async (activeTabId: string): Promise<void> => {
       while (nextIndex < pending.length) {
         requireActiveCrawl(signal)
         const item = pending[nextIndex]
@@ -183,21 +182,6 @@ export async function exportBook(
             break
           } catch (error) {
             requireActiveCrawl(signal)
-            if (Camofox.canReplaceTab(error)) {
-              reportBrowserRecovery(error, "replace-tab")
-              activeTabId = (await browser.replaceTab(activeTabId)).tabId
-              reportBrowserRecovery(error, "tab-ready")
-              attempt -= 1
-              continue
-            }
-            if (error instanceof ChapterContentError && attempt < options.retries) {
-              lastError = error
-              reportBrowserRecovery(error, "replace-tab")
-              activeTabId = (await browser.replaceTab(activeTabId)).tabId
-              reportBrowserRecovery(error, "tab-ready")
-              continue
-            }
-            // session 級錯誤立即向外拋出，避免在已失效的分頁上浪費 retries。
             if (Camofox.requiresRestart(error)) throw error
             lastError = error instanceof Error ? error : new CrawlError("Unknown chapter export failure.")
             if (attempt < options.retries) await delay(options.delayMs * attempt)

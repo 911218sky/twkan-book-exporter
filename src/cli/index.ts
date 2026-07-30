@@ -17,12 +17,7 @@ async function main(signal: AbortSignal): Promise<void> {
         options,
         progress.render.bind(progress),
         signal,
-        (error, action) => {
-          const reason = camofoxResetReason(error)
-          if (action === "replace-tab") progress.replacingTab(reason)
-          else if (action === "restart-browser") progress.restarting(reason)
-          else progress.tabReady()
-        },
+        (error) => progress.restarting(camofoxResetReason(error)),
       )
       break
     } catch (error) {
