@@ -16,6 +16,22 @@ npm install -g twkan
 twkan 90206 --output output/90206
 ```
 
+### 第一次安裝
+
+需要 Node.js 22 或更新版本。一般 npm 設定下，安裝完成即可使用。
+
+若安裝時顯示 `allow-scripts` 警告，代表 npm 尚未允許 Camofox 等相依套件執行安裝腳本。請執行：
+
+```powershell
+npm approve-scripts
+```
+
+依畫面允許 `@askjo/camofox-browser` 與 `better-sqlite3`，再以一章測試確認環境：
+
+```powershell
+twkan 104807 --limit 1 --output output/test
+```
+
 ## 使用方式
 
 以書籍 ID 下載整本小說：
