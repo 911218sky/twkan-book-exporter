@@ -3,13 +3,14 @@ import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
 import { Camofox } from "../browser/camofox.js"
 import type { CrawlOptions } from "../cli/options.js"
-import { CrawlError } from "../core/errors.js"
-import { bookMetadata, chapterIndexUrl, chapterLinks, chapterUrls, requireChapter } from "../twkan/novel.js"
+import { BrowserRestartRequiredError, CrawlError } from "../core/errors.js"
+import { ChapterContentError, bookMetadata, chapterIndexUrl, chapterLinks, chapterUrls, requireChapter } from "../twkan/novel.js"
 import type { BookMetadata } from "../twkan/novel.js"
 
+// 這些表達式在 Camofox 頁面內執行，只回傳可序列化資料給 Node.js。
 const chapterExpression = "(() => { const candidates = ['#txtcontent0', '#articlecontent', '#content', '.chapter-content', '.read-content', 'article'].map((selector) => document.querySelector(selector)).filter((element) => element !== null); const content = candidates.map((element) => element.innerText.trim()).sort((left, right) => right.length - left.length)[0] ?? ''; return { title: document.querySelector('h1')?.textContent?.trim() ?? '', content }; })()"
 const completeLinksExpression = `(() => { const bookId = location.pathname.match(/^\\/book\\/(\\d+)\\/index\\.html$/)?.[1]; if (bookId === undefined) return []; return fetch('/ajax_novels/chapterlist/' + bookId + '.html').then((response) => response.text()).then((html) => Array.from(new DOMParser().parseFromString(html, 'text/html').querySelectorAll('a[href*="/txt/"]'), (anchor) => new URL(anchor.getAttribute('href'), location.href).href)); })()`
-const bookMetadataExpression = "(() => { const info = typeof bookinfo === 'undefined' ? {} : bookinfo; const text = document.body.innerText; const status = text.match(/\\d+(?:\\.\\d+)?\\s*萬字\\s*[|｜]\\s*(?:連載|完結)/)?.[0] ?? ''; const synopsis = document.querySelector('.book-intro, .book_intro, .intro, #intro, #bookintro')?.textContent?.trim() ?? document.querySelector('meta[name=description]')?.getAttribute('content')?.trim() ?? ''; const keywords = document.querySelector('meta[name=keywords]')?.getAttribute('content')?.trim() ?? info.tags ?? ''; return { title: info.articlename ?? document.querySelector('h1')?.textContent?.trim() ?? '', author: info.author ?? '', category: info.sortName ?? '', keywords, status, synopsis }; })()"
+const bookMetadataExpression = "(() => { const info = typeof bookinfo === 'undefined' ? {} : bookinfo; const text = document.body.innerText; const status = text.match(/\\d+(?:\\.\\d+)?\\s*萬字\\s*[|｜]\\s*(?:連載|完結)/)?.[0] ?? ''; const panelText = document.querySelector('#tab_info')?.innerText ?? ''; const synopsis = document.querySelector('meta[property=\"og:description\"]')?.getAttribute('content')?.trim() ?? document.querySelector('.book-intro, .book_intro, .intro, #intro, #bookintro')?.textContent?.trim() ?? document.querySelector('meta[name=description]')?.getAttribute('content')?.trim() ?? ''; const keywords = panelText.match(/小說關鍵詞[：:]\\s*([^\\n]+)/)?.[1]?.trim() ?? document.querySelector('meta[name=keywords]')?.getAttribute('content')?.trim() ?? info.tags ?? ''; return { title: info.articlename ?? document.querySelector('h1')?.textContent?.trim() ?? '', author: info.author ?? '', category: info.sortName ?? '', keywords, status, synopsis }; })()"
 const metadataFilename = "0000-書籍資訊.txt"
 
 type PlannedChapter = {
@@ -25,8 +26,10 @@ type ExportResult = {
 }
 
 export type ProgressCallback = (cached: number, completed: number, total: number) => void
+export type BrowserRecoveryCallback = (error: unknown, action: "restart-browser" | "replace-tab" | "tab-ready") => void
 
 export function navigationSlot(nextNavigationAt: number, now: number, delayMs: number): { readonly nextNavigationAt: number; readonly waitMs: number } {
+  // 所有 worker 共用同一時間軸，確保導航請求彼此仍至少相隔 delayMs。
   const readyAt = Math.max(nextNavigationAt, now)
   return { nextNavigationAt: readyAt + delayMs, waitMs: readyAt - now }
 }
@@ -117,13 +120,19 @@ async function mergeChapters(directory: string, metadata: BookMetadata, planned:
   return target
 }
 
-export async function exportBook(options: CrawlOptions, reportProgress: ProgressCallback = () => undefined, signal?: AbortSignal): Promise<ExportResult> {
+export async function exportBook(
+  options: CrawlOptions,
+  reportProgress: ProgressCallback = () => undefined,
+  signal?: AbortSignal,
+  reportBrowserRecovery: BrowserRecoveryCallback = () => undefined,
+): Promise<ExportResult> {
   requireActiveCrawl(signal)
   await mkdir(options.outputDirectory, { recursive: true })
-  const browser = await Camofox.connect()
+  const browser = await Camofox.connect(options.camofox)
   let tabId: string | undefined
   let closePromise: Promise<void> | undefined
   let restartBrowser = false
+  // SIGINT 與 finally 可能同時要求清理；共用 Promise 保證瀏覽器只關閉一次。
   const closeBrowser = (): Promise<void> => {
     if (closePromise === undefined) closePromise = browser.close(tabId, restartBrowser)
     return closePromise
@@ -136,6 +145,7 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
     await browser.navigate(tabId, options.bookUrl)
     const metadata = bookMetadata(await browser.evaluate(tabId, bookMetadataExpression))
     await browser.navigate(tabId, chapterIndexUrl(options.bookUrl))
+    // 完整目錄由站內 AJAX 端點提供，書籍首頁通常只包含部分章節。
     const planned = chapterLinks(chapterUrls(await browser.evaluate(tabId, completeLinksExpression)))
       .slice(0, options.limit)
       .map((link, index): PlannedChapter => ({ link, number: index + 1 }))
@@ -151,7 +161,9 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
     let nextIndex = 0
     let nextNavigationAt = 0
     let written = 0
-    const worker = async (activeTabId: string): Promise<void> => {
+    // worker 以共享索引動態領取下一章，較慢的分頁不會阻塞其他分頁。
+    const worker = async (initialTabId: string): Promise<void> => {
+      let activeTabId = initialTabId
       while (nextIndex < pending.length) {
         requireActiveCrawl(signal)
         const item = pending[nextIndex]
@@ -171,10 +183,28 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
             break
           } catch (error) {
             requireActiveCrawl(signal)
+            if (Camofox.canReplaceTab(error)) {
+              reportBrowserRecovery(error, "replace-tab")
+              activeTabId = (await browser.replaceTab(activeTabId)).tabId
+              reportBrowserRecovery(error, "tab-ready")
+              attempt -= 1
+              continue
+            }
+            if (error instanceof ChapterContentError && attempt < options.retries) {
+              lastError = error
+              reportBrowserRecovery(error, "replace-tab")
+              activeTabId = (await browser.replaceTab(activeTabId)).tabId
+              reportBrowserRecovery(error, "tab-ready")
+              continue
+            }
+            // session 級錯誤立即向外拋出，避免在已失效的分頁上浪費 retries。
             if (Camofox.requiresRestart(error)) throw error
             lastError = error instanceof Error ? error : new CrawlError("Unknown chapter export failure.")
             if (attempt < options.retries) await delay(options.delayMs * attempt)
           }
+        }
+        if (lastError instanceof ChapterContentError) {
+          throw new BrowserRestartRequiredError(`Chapter ${item.number} remained unavailable after replacing its tab.`)
         }
         if (lastError !== undefined) throw lastError
       }
@@ -184,6 +214,8 @@ export async function exportBook(options: CrawlOptions, reportProgress: Progress
     return { cached: cached.size, mergedFile: await mergeChapters(options.outputDirectory, metadata, planned), total: planned.length, written }
   } catch (error) {
     restartBrowser = Camofox.requiresRestart(error)
+    // 先顯示重啟狀態；finally 完成冷卻與關閉後，CLI 才會清除提示並續跑。
+    if (restartBrowser) reportBrowserRecovery(error, "restart-browser")
     throw error
   } finally {
     signal?.removeEventListener("abort", closeOnInterrupt)

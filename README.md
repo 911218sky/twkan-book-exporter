@@ -4,6 +4,8 @@
 
 ## 安裝
 
+需要 Node.js 22 或更新版本。
+
 ```powershell
 npm install
 ```
@@ -11,19 +13,19 @@ npm install
 ## 下載
 
 ```powershell
-npm run crawl -- 90206 --output output/90206
+npm run crawl -- 90206 -- --output output/90206
 ```
 
 也可使用網址：
 
 ```powershell
-npm run crawl -- https://twkan.com/book/90206/index.html --output output/90206
+npm run crawl -- https://twkan.com/book/90206/index.html -- --output output/90206
 ```
 
 只下載前 10 章：
 
 ```powershell
-npm run crawl -- 90206 --limit 10 --output output/90206-preview
+npm run crawl -- 90206 -- --limit 10 --output output/90206-preview
 ```
 
 ## 輸出
@@ -46,6 +48,9 @@ npm run stop:camofox
 Copy-Item twkanexporter.example.yaml twkanexporter.yaml
 npm run crawl
 ```
+
+下載選項與 Camofox 的 session、分頁、逾時設定都集中在 `twkanexporter.yaml`。
+若檔案不存在，程式會自動讀取 `twkanexporter.example.yaml`。
 
 ## 開發
 

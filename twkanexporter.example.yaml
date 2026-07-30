@@ -1,15 +1,67 @@
 # 複製為 twkanexporter.yaml 後，可直接執行 npm run crawl。
 # 命令列同名選項會覆寫這裡的設定。
+
+# ==================== 書籍與輸出 ====================
+
 book: "https://twkan.com/book/90206/index.html"
 output: "output/90206"
 
-# 3 個分頁與 2 秒等待是速度、記憶體使用量與網站穩定性的折衷。
-concurrency: 3
-delayMs: 2000
+# ==================== 下載效能 ====================
+
+# 6 個分頁與 500 毫秒等待是速度、記憶體使用量與網站穩定性的折衷。
+concurrency: 6
+delayMs: 500
 retries: 3
+
+# ==================== 章節篩選 ====================
 
 # 只抓前幾章，適合先確認輸出。
 # limit: 10
 
 # 排除單章或章節範圍；被排除的章節不下載、不使用快取、也不會合併。
 # ignore: "1-2,8"
+
+# ==================== Camofox 瀏覽器 ====================
+
+# 沒有填寫的欄位會使用下列內建預設值。
+camofox:
+  # ---------- 網路與隱私 ----------
+
+  # 只允許本機連線，避免把瀏覽器控制 API 暴露到區域網路。
+  bindHost: "127.0.0.1"
+
+  # 是否傳送匿名錯誤報告；false 可避免額外網路流量。
+  crashReportEnabled: false
+
+  # ---------- 生命週期與逾時 ----------
+
+  # 所有 session 關閉後，瀏覽器閒置多久自動停止；120000 毫秒等於 2 分鐘。
+  browserIdleTimeoutMs: 120000
+
+  # 爬蟲與 Camofox 共用的頁面導航逾時；5000 毫秒等於 5 秒。
+  navigateTimeoutMs: 5000
+
+  # Camofox API 處理單一請求的最長時間；60000 毫秒等於 60 秒。
+  handlerTimeoutMs: 60000
+
+  # ---------- 資源與並行上限 ----------
+
+  # 同一 session 最多同時處理的 API 請求數；不是分頁數量。
+  maxConcurrentPerUser: 3
+
+  # 所有 session 合計可存在的分頁上限。
+  maxTabsGlobal: 6
+
+  # 單一 session 可存在的分頁上限。
+  maxTabsPerSession: 3
+
+  # 獨立 session 上限；不同 session 的 Cookie 與網站狀態互相隔離。
+  maxSessions: 2
+
+  # ---------- 閒置清理 ----------
+
+  # session 沒有操作多久後自動過期；180000 毫秒等於 3 分鐘。
+  sessionTimeoutMs: 180000
+
+  # 分頁沒有操作多久後可被清理；180000 毫秒等於 3 分鐘。
+  tabInactivityMs: 180000

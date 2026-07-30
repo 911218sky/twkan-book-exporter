@@ -4,3 +4,7 @@ export class CrawlError extends Error {
     this.name = "CrawlError"
   }
 }
+
+export class BrowserRestartRequiredError extends CrawlError {
+  public override readonly name = "BrowserRestartRequiredError"
+}

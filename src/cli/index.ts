@@ -3,7 +3,7 @@ import { CrawlError } from "../core/errors.js"
 import { configPathFromArguments, loadCrawlConfig } from "./config.js"
 import { parseOptions } from "./options.js"
 import { ProgressReporter } from "./progress.js"
-import { isCamofoxSessionReset } from "./session-recovery.js"
+import { camofoxResetReason, isCamofoxSessionReset } from "./session-recovery.js"
 
 async function main(signal: AbortSignal): Promise<void> {
   const arguments_ = process.argv.slice(2).filter((argument) => argument !== "--")
@@ -13,15 +13,25 @@ async function main(signal: AbortSignal): Promise<void> {
   let result: Awaited<ReturnType<typeof exportBook>>
   while (true) {
     try {
-      result = await exportBook(options, progress.render.bind(progress), signal)
+      result = await exportBook(
+        options,
+        progress.render.bind(progress),
+        signal,
+        (error, action) => {
+          const reason = camofoxResetReason(error)
+          if (action === "replace-tab") progress.replacingTab(reason)
+          else if (action === "restart-browser") progress.restarting(reason)
+          else progress.tabReady()
+        },
+      )
       break
     } catch (error) {
       if (!isCamofoxSessionReset(error)) throw error
-      progress.reset()
-      console.error("\nCamofox is restarting now; resuming completed chapters.")
+      progress.resumed()
     }
   }
-  console.log(`Export complete. Verified ${result.total}/${result.total} chapters. Cache ${result.cached}. Downloaded ${result.written}.`)
+  const summary = progress.summary()
+  console.log(`Export complete. Verified ${result.total}/${result.total} chapters. Cache ${summary.cached}. Downloaded ${summary.downloaded}.`)
   console.log(`Merged ${result.mergedFile}`)
 }
 

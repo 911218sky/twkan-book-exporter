@@ -4,6 +4,13 @@ const origin = "https://twkan.com"
 
 export type ChapterLink = { readonly url: string }
 export type Chapter = { readonly content: string; readonly number: number; readonly title: string }
+export class ChapterContentError extends CrawlError {
+  public override readonly name = "ChapterContentError"
+
+  public constructor(number: number) {
+    super(`Chapter ${number} did not expose readable public content.`)
+  }
+}
 export type BookMetadata = {
   readonly author: string
   readonly category: string
@@ -56,6 +63,7 @@ export function bookMetadata(value: unknown): BookMetadata {
 }
 
 export function chapterLinks(values: readonly string[]): readonly ChapterLink[] {
+  // 僅接受本站章節 URL，並保留目錄順序去重，避免外部連結混入合併檔。
   const links: ChapterLink[] = []
   const seen = new Set<string>()
   for (const value of values) {
@@ -85,6 +93,6 @@ export function requireChapter(value: unknown, number: number): Chapter {
   if (!isRecord(value)) throw new CrawlError(`Chapter ${number} returned an invalid page payload.`)
   const content = typeof value["content"] === "string" ? normalizeContent(value["content"]) : ""
   const title = typeof value["title"] === "string" ? value["title"].trim() : ""
-  if (title === "" || content === "") throw new CrawlError(`Chapter ${number} did not expose readable public content.`)
+  if (title === "" || content === "") throw new ChapterContentError(number)
   return { content, number, title }
 }

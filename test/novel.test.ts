@@ -5,9 +5,7 @@ import { tmpdir } from "node:os"
 import test from "node:test"
 import { loadCrawlConfig } from "../src/cli/config.js"
 import { parseOptions } from "../src/cli/options.js"
-import { isCamofoxSessionReset } from "../src/cli/session-recovery.js"
-import { Camofox } from "../src/browser/camofox.js"
-import { cacheBelongsToBook, cacheFilenameNumber, bookMetadataText, exportBook, navigationSlot } from "../src/export/book.js"
+import { cacheBelongsToBook, cacheFilenameNumber, bookMetadataText, exportBook } from "../src/export/book.js"
 import { bookMetadata, bookTitle, bookUrl, chapterIndexUrl, chapterLinks, normalizeContent } from "../src/twkan/novel.js"
 import { CrawlError } from "../src/core/errors.js"
 
@@ -81,11 +79,6 @@ test("cacheFilenameNumber recognizes a completed chapter filename", () => {
   assert.equal(number, 24)
 })
 
-test("navigationSlot spaces concurrent chapter navigations", () => {
-  assert.deepEqual(navigationSlot(0, 1_000, 1_500), { nextNavigationAt: 2_500, waitMs: 0 })
-  assert.deepEqual(navigationSlot(2_500, 1_100, 1_500), { nextNavigationAt: 4_000, waitMs: 1_400 })
-})
-
 test("cacheBelongsToBook rejects chapters from a different book", () => {
   // Given: an output folder whose information file belongs to another novel
   const metadata = "你做的副本是給人玩的嗎？\n\n作者：獻歌\n"
@@ -97,32 +90,23 @@ test("cacheBelongsToBook rejects chapters from a different book", () => {
   assert.equal(belongs, false)
 })
 
-test("isCamofoxSessionReset restarts the browser for a discarded tab", () => {
-  // Given: Camofox discarded a tab while the crawler was reading a chapter
-  const error = new CrawlError("Camofox POST /tabs/abc/evaluate failed: Tab no longer exists")
-
-  // When: the retry loop classifies the error
-  const reset = isCamofoxSessionReset(error)
-
-  // Then: the crawler restarts Camofox before it continues from cache
-  assert.equal(reset, true)
-  assert.equal(Camofox.isMissingTab(error), true)
-})
-
-test("isCamofoxSessionReset recognizes a Twkan temporary rejection", () => {
-  const error = new CrawlError("Camofox POST /tabs/abc/navigate failed: HTTP 403")
-  assert.equal(isCamofoxSessionReset(error), true)
-})
-
-test("isCamofoxSessionReset recognizes the five-second navigation timeout", () => {
-  const error = new CrawlError("Camofox navigation timed out after 5000ms.")
-  assert.equal(isCamofoxSessionReset(error), true)
-})
-
-test("parseOptions uses three paced concurrent tabs", () => {
+test("parseOptions uses six paced concurrent tabs", () => {
   const options = parseOptions(["90206"])
-  assert.equal(options.concurrency, 3)
-  assert.equal(options.delayMs, 2_000)
+  assert.equal(options.concurrency, 6)
+  assert.equal(options.delayMs, 500)
+  assert.deepEqual(options.camofox, {
+    bindHost: "127.0.0.1",
+    browserIdleTimeoutMs: 120_000,
+    crashReportEnabled: false,
+    handlerTimeoutMs: 60_000,
+    maxConcurrentPerUser: 3,
+    maxSessions: 2,
+    maxTabsGlobal: 6,
+    maxTabsPerSession: 3,
+    navigateTimeoutMs: 5_000,
+    sessionTimeoutMs: 180_000,
+    tabInactivityMs: 180_000,
+  })
 })
 
 test("parseOptions accepts an ignored chapter list and ranges", () => {
@@ -150,17 +134,30 @@ test("loadCrawlConfig parses the documented YAML settings", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "twkan-exporter-"))
   context.after(async () => rm(directory, { force: true, recursive: true }))
   const configFile = path.join(directory, "book.yaml")
-  await writeFile(configFile, "book: \"90206\"\nconcurrency: 2\ndelayMs: 2000\nignore: \"1-2,8\"\noutput: output/test\nretries: 4\n", "utf8")
+  await writeFile(configFile, "book: \"90206\"\nconcurrency: 2\ndelayMs: 2000\nignore: \"1-2,8\"\noutput: output/test\nretries: 4\ncamofox:\n  maxSessions: 3\n  maxTabsGlobal: 9\n  navigateTimeoutMs: 7000\n  crashReportEnabled: false\n", "utf8")
 
   const config = await loadCrawlConfig(configFile)
   assert.deepEqual(config, {
     book: "90206",
+    camofox: { crashReportEnabled: false, maxSessions: 3, maxTabsGlobal: 9, navigateTimeoutMs: 7_000 },
     concurrency: 2,
     delayMs: 2_000,
     ignore: "1-2,8",
     output: "output/test",
     retries: 4,
   })
+})
+
+test("loadCrawlConfig falls back to the example when the default YAML is missing", async (context) => {
+  const directory = await mkdtemp(path.join(tmpdir(), "twkan-exporter-fallback-"))
+  context.after(async () => rm(directory, { force: true, recursive: true }))
+  const defaultFile = path.join(directory, "twkanexporter.yaml")
+  const exampleFile = path.join(directory, "twkanexporter.example.yaml")
+  await writeFile(exampleFile, "book: 90206\ncamofox:\n  navigateTimeoutMs: 5000\n", "utf8")
+
+  const config = await loadCrawlConfig(defaultFile, exampleFile)
+
+  assert.deepEqual(config, { book: "90206", camofox: { navigateTimeoutMs: 5_000 } })
 })
 
 test("chapterLinks preserves the chapter order exposed by Twkan", () => {

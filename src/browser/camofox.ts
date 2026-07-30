@@ -3,12 +3,21 @@ import type { ChildProcess } from "node:child_process"
 import { createRequire } from "node:module"
 import path from "node:path"
 import { setTimeout as delay } from "node:timers/promises"
-import { CrawlError } from "../core/errors.js"
+import { BrowserRestartRequiredError, CrawlError } from "../core/errors.js"
+import type { ResolvedCamofoxConfig } from "../cli/options.js"
 
 const require = createRequire(import.meta.url)
 const origin = "http://127.0.0.1:9377"
-const chapterNavigationTimeoutMs = 5_000
+const recoveryCooldownMs = 3_000
 type Tab = { readonly tabId: string }
+
+export function sessionIndexForTab(tabOrdinal: number, sessionCount: number): number {
+  return tabOrdinal % sessionCount
+}
+
+export function replacementGeneration(tabGeneration: number, sessionGeneration: number): number {
+  return tabGeneration === sessionGeneration ? sessionGeneration + 1 : sessionGeneration
+}
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
@@ -24,19 +33,34 @@ export async function waitForProcessExit(child: ChildProcess): Promise<void> {
 }
 
 export class Camofox {
-  private readonly userId = `twkan-${crypto.randomUUID()}`
+  private readonly activeUserIds = new Set<string>()
+  private readonly config: ResolvedCamofoxConfig
+  private readonly replacementCooldowns = new Map<string, Promise<void>>()
+  private readonly sessionGenerations = new Map<string, number>()
+  private readonly sessionUserIds: readonly string[]
+  private readonly tabGenerations = new Map<string, number>()
+  private readonly tabOwners = new Map<string, string>()
+  private nextTabOrdinal = 0
+  // 只有本程序啟動服務時才保存 child process；既有服務必須用管理腳本關閉。
   private readonly server: ChildProcess | undefined
 
-  private constructor(server: ChildProcess | undefined) { this.server = server }
+  private constructor(server: ChildProcess | undefined, config: ResolvedCamofoxConfig) {
+    const runId = crypto.randomUUID()
+    this.config = config
+    this.server = server
+    this.sessionUserIds = Array.from({ length: config.maxSessions }, (_, index) => `twkan-${runId}-${index + 1}`)
+  }
 
-  public static async connect(): Promise<Camofox> {
-    if (await Camofox.healthy()) return new Camofox(undefined)
+  public static async connect(config: ResolvedCamofoxConfig): Promise<Camofox> {
+    // 優先沿用健康的本機服務，避免每次續跑都額外啟動一個 Camofox。
+    if (await Camofox.healthy()) return new Camofox(undefined, config)
+    // 兩個 context 分攤六個分頁，但仍共用一個瀏覽器程序以控制記憶體用量。
     const server = spawn(process.execPath, [require.resolve("@askjo/camofox-browser/server.js")], {
-      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: process.env.BROWSER_IDLE_TIMEOUT_MS ?? "120000", CAMOFOX_BIND_HOST: process.env.CAMOFOX_BIND_HOST ?? "127.0.0.1", CAMOFOX_CRASH_REPORT_ENABLED: process.env.CAMOFOX_CRASH_REPORT_ENABLED ?? "false", CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", HANDLER_TIMEOUT_MS: process.env.HANDLER_TIMEOUT_MS ?? "60000", MAX_CONCURRENT_PER_USER: process.env.MAX_CONCURRENT_PER_USER ?? "3", MAX_SESSIONS: process.env.MAX_SESSIONS ?? "1", MAX_TABS_GLOBAL: process.env.MAX_TABS_GLOBAL ?? "3", MAX_TABS_PER_SESSION: process.env.MAX_TABS_PER_SESSION ?? "3", NAVIGATE_TIMEOUT_MS: process.env.NAVIGATE_TIMEOUT_MS ?? "55000", SESSION_TIMEOUT_MS: process.env.SESSION_TIMEOUT_MS ?? "180000", TAB_INACTIVITY_MS: process.env.TAB_INACTIVITY_MS ?? "180000" },
+      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: String(config.browserIdleTimeoutMs), CAMOFOX_BIND_HOST: config.bindHost, CAMOFOX_CRASH_REPORT_ENABLED: String(config.crashReportEnabled), CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", HANDLER_TIMEOUT_MS: String(config.handlerTimeoutMs), MAX_CONCURRENT_PER_USER: String(config.maxConcurrentPerUser), MAX_SESSIONS: String(config.maxSessions), MAX_TABS_GLOBAL: String(config.maxTabsGlobal), MAX_TABS_PER_SESSION: String(config.maxTabsPerSession), NAVIGATE_TIMEOUT_MS: String(config.navigateTimeoutMs), SESSION_TIMEOUT_MS: String(config.sessionTimeoutMs), TAB_INACTIVITY_MS: String(config.tabInactivityMs) },
       stdio: "ignore", windowsHide: true,
     })
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (await Camofox.healthy()) return new Camofox(server)
+      if (await Camofox.healthy()) return new Camofox(server, config)
       await delay(1_000)
     }
     server.kill()
@@ -44,7 +68,11 @@ export class Camofox {
   }
 
   public static isMissingTab(error: unknown): boolean {
-    return error instanceof CrawlError && (error.message.includes("Tab no longer exists") || error.message.includes("Tab not found"))
+    if (!(error instanceof CrawlError)) return false
+    const message = error.message.toLowerCase()
+    return message.includes("tab no longer exists")
+      || message.includes("tab not found")
+      || message.includes("no longer exists because its session was replaced")
   }
 
   public static isAccessDenied(error: unknown): boolean {
@@ -56,38 +84,85 @@ export class Camofox {
   }
 
   public static requiresRestart(error: unknown): boolean {
-    return Camofox.isAccessDenied(error) || Camofox.isMissingTab(error) || Camofox.isNavigationTimeout(error)
+    return error instanceof BrowserRestartRequiredError || Camofox.isAccessDenied(error)
+  }
+
+  public static canReplaceTab(error: unknown): boolean {
+    return Camofox.isMissingTab(error) || Camofox.isNavigationTimeout(error)
   }
 
   public async createTab(url?: string): Promise<Tab> {
-    const body = url === undefined ? { sessionKey: "crawler", userId: this.userId } : { sessionKey: "crawler", url, userId: this.userId }
+    const sessionIndex = sessionIndexForTab(this.nextTabOrdinal, this.sessionUserIds.length)
+    const userId = this.sessionUserIds[sessionIndex]
+    if (userId === undefined) throw new CrawlError("Camofox session allocation failed.")
+    this.nextTabOrdinal += 1
+    return this.createTabForUser(userId, url)
+  }
+
+  public async replaceTab(tabId: string): Promise<Tab> {
+    const userId = this.tabOwner(tabId)
+    const tabGeneration = this.tabGeneration(tabId)
+    const currentGeneration = this.sessionGeneration(userId)
+    const nextGeneration = replacementGeneration(tabGeneration, currentGeneration)
+    const startsRecovery = nextGeneration !== currentGeneration
+    if (startsRecovery) this.sessionGenerations.set(userId, nextGeneration)
+    const cooldown = this.replacementCooldown(userId, startsRecovery)
+    try {
+      await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(userId)}`, { method: "DELETE" })
+    } catch (error) {
+      if (!Camofox.isMissingTab(error)) throw error
+    }
+    await cooldown
+    return this.createTabForUser(userId)
+  }
+
+  private replacementCooldown(userId: string, startsRecovery: boolean): Promise<void> {
+    const activeCooldown = this.replacementCooldowns.get(userId)
+    if (activeCooldown !== undefined) return activeCooldown
+    if (!startsRecovery) return Promise.resolve()
+    const cooldown = delay(recoveryCooldownMs).finally(() => this.replacementCooldowns.delete(userId))
+    this.replacementCooldowns.set(userId, cooldown)
+    return cooldown
+  }
+
+  private async createTabForUser(userId: string, url?: string): Promise<Tab> {
+    const generation = this.sessionGeneration(userId)
+    const body = url === undefined ? { sessionKey: "crawler", userId } : { sessionKey: "crawler", url, userId }
     const value = await this.request("/tabs", { method: "POST", body })
     if (!isRecord(value) || typeof value["tabId"] !== "string") throw new CrawlError("Camofox did not return a tab ID.")
+    this.activeUserIds.add(userId)
+    this.tabGenerations.set(value["tabId"], generation)
+    this.tabOwners.set(value["tabId"], userId)
     return { tabId: value["tabId"] }
   }
 
   public async navigate(tabId: string, url: string): Promise<void> {
-    await this.request(`/tabs/${tabId}/navigate`, { body: { url, userId: this.userId }, method: "POST", timeoutMs: chapterNavigationTimeoutMs })
+    const userId = this.currentTabOwner(tabId)
+    await this.request(`/tabs/${tabId}/navigate`, { body: { url, userId }, method: "POST", timeoutMs: this.config.navigateTimeoutMs })
+    this.currentTabOwner(tabId)
   }
 
   public async evaluate(tabId: string, expression: string): Promise<unknown> {
-    const value = await this.request(`/tabs/${tabId}/evaluate`, { method: "POST", body: { expression, userId: this.userId } })
+    const userId = this.currentTabOwner(tabId)
+    const value = await this.request(`/tabs/${tabId}/evaluate`, { method: "POST", body: { expression, userId } })
+    this.currentTabOwner(tabId)
     if (!isRecord(value)) throw new CrawlError("Camofox returned an invalid evaluation response.")
     return value["result"]
   }
 
   public async close(tabId: string | undefined, restartBrowser = false): Promise<void> {
     if (restartBrowser) {
+      // HTTP 403 代表目前瀏覽器整體狀態不可用，才需要完整重啟。
       await Camofox.restart(this.server)
       return
     }
     try {
-      if (tabId !== undefined) await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(this.userId)}`, { method: "DELETE" })
+      if (tabId !== undefined) await this.request(`/tabs/${tabId}?userId=${encodeURIComponent(this.tabOwner(tabId))}`, { method: "DELETE" })
     } catch (error) {
       if (!Camofox.isMissingTab(error)) throw error
     } finally {
       try {
-        await this.request(`/sessions/${this.userId}`, { method: "DELETE" })
+        await Promise.all([...this.activeUserIds].map((userId) => this.request(`/sessions/${userId}`, { method: "DELETE" })))
       } finally {
         await Camofox.stopOwnedServer(this.server)
       }
@@ -95,11 +170,13 @@ export class Camofox {
   }
 
   private static async restart(server: ChildProcess | undefined): Promise<void> {
+    await delay(recoveryCooldownMs)
     if (server !== undefined) {
       await Camofox.stopOwnedServer(server)
       return
     }
     if (process.platform !== "win32") throw new CrawlError("Cannot restart an externally started Camofox server on this platform.")
+    // 外部服務沒有 child handle，只能依監聽連接埠找出完整程序樹並關閉。
     const script = path.resolve(process.cwd(), "scripts", "stop-camofox.ps1")
     const stopProcess = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { stdio: "ignore", windowsHide: true })
     await waitForProcessExit(stopProcess)
@@ -121,6 +198,30 @@ export class Camofox {
     try { return (await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1_000) })).ok } catch { return false }
   }
 
+  private tabOwner(tabId: string): string {
+    const userId = this.tabOwners.get(tabId)
+    if (userId === undefined) throw new CrawlError(`Camofox tab ${tabId} has no session owner.`)
+    return userId
+  }
+
+  private tabGeneration(tabId: string): number {
+    const generation = this.tabGenerations.get(tabId)
+    if (generation === undefined) throw new CrawlError(`Camofox tab ${tabId} has no session generation.`)
+    return generation
+  }
+
+  private sessionGeneration(userId: string): number {
+    return this.sessionGenerations.get(userId) ?? 0
+  }
+
+  private currentTabOwner(tabId: string): string {
+    const userId = this.tabOwner(tabId)
+    if (this.tabGeneration(tabId) !== this.sessionGeneration(userId)) {
+      throw new CrawlError(`Camofox tab ${tabId} no longer exists because its session was replaced.`)
+    }
+    return userId
+  }
+
   private async request(path: string, init: { readonly body?: unknown; readonly method: string; readonly timeoutMs?: number }): Promise<unknown> {
     const timeoutMs = init.timeoutMs ?? 70_000
     let response: Response
@@ -129,6 +230,7 @@ export class Camofox {
         ? await fetch(`${origin}${path}`, { method: init.method, signal: AbortSignal.timeout(timeoutMs) })
         : await fetch(`${origin}${path}`, { body: JSON.stringify(init.body), headers: { "content-type": "application/json" }, method: init.method, signal: AbortSignal.timeout(timeoutMs) })
     } catch (error) {
+      // 導航使用較短的逾時，並轉成可被上層辨識的重啟原因。
       if (init.timeoutMs !== undefined && error instanceof Error && error.name === "TimeoutError") {
         throw new CrawlError(`Camofox navigation timed out after ${init.timeoutMs}ms.`)
       }
