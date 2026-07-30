@@ -30,6 +30,9 @@ camofox:
   # 只允許本機連線，避免把瀏覽器控制 API 暴露到區域網路。
   bindHost: "127.0.0.1"
 
+  # Camofox 控制 API 的本機連接埠；9580 避開部分 Windows 保留的 9377 埠。
+  port: 9580
+
   # 是否傳送匿名錯誤報告；false 可避免額外網路流量。
   crashReportEnabled: false
 

@@ -7,9 +7,12 @@ import { BrowserRestartRequiredError, CrawlError } from "../core/errors.js"
 import type { ResolvedCamofoxConfig } from "../cli/options.js"
 
 const require = createRequire(import.meta.url)
-const origin = "http://127.0.0.1:9377"
 const recoveryCooldownMs = 3_000
 type Tab = { readonly tabId: string }
+
+function controlOrigin(port: number): string {
+  return `http://127.0.0.1:${port}`
+}
 
 export function sessionIndexForTab(tabOrdinal: number, sessionCount: number): number {
   return tabOrdinal % sessionCount
@@ -31,6 +34,7 @@ export async function waitForProcessExit(child: ChildProcess): Promise<void> {
 export class Camofox {
   private readonly activeUserIds = new Set<string>()
   private readonly config: ResolvedCamofoxConfig
+  private readonly origin: string
   private readonly sessionUserIds: readonly string[]
   private readonly tabOwners = new Map<string, string>()
   private nextTabOrdinal = 0
@@ -40,20 +44,21 @@ export class Camofox {
   private constructor(server: ChildProcess | undefined, config: ResolvedCamofoxConfig) {
     const runId = crypto.randomUUID()
     this.config = config
+    this.origin = controlOrigin(config.port)
     this.server = server
     this.sessionUserIds = Array.from({ length: config.maxSessions }, (_, index) => `twkan-${runId}-${index + 1}`)
   }
 
   public static async connect(config: ResolvedCamofoxConfig): Promise<Camofox> {
     // 優先沿用健康的本機服務，避免每次續跑都額外啟動一個 Camofox。
-    if (await Camofox.healthy()) return new Camofox(undefined, config)
+    if (await Camofox.healthy(config)) return new Camofox(undefined, config)
     // 兩個 context 分攤六個分頁，但仍共用一個瀏覽器程序以控制記憶體用量。
     const server = spawn(process.execPath, [require.resolve("@askjo/camofox-browser/server.js")], {
-      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: String(config.browserIdleTimeoutMs), CAMOFOX_BIND_HOST: config.bindHost, CAMOFOX_CRASH_REPORT_ENABLED: String(config.crashReportEnabled), CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", HANDLER_TIMEOUT_MS: String(config.handlerTimeoutMs), MAX_CONCURRENT_PER_USER: String(config.maxConcurrentPerUser), MAX_SESSIONS: String(config.maxSessions), MAX_TABS_GLOBAL: String(config.maxTabsGlobal), MAX_TABS_PER_SESSION: String(config.maxTabsPerSession), NAVIGATE_TIMEOUT_MS: String(config.navigateTimeoutMs), SESSION_TIMEOUT_MS: String(config.sessionTimeoutMs), TAB_INACTIVITY_MS: String(config.tabInactivityMs) },
+      env: { ...process.env, BROWSER_IDLE_TIMEOUT_MS: String(config.browserIdleTimeoutMs), CAMOFOX_BIND_HOST: config.bindHost, CAMOFOX_CRASH_REPORT_ENABLED: String(config.crashReportEnabled), CAMOFOX_DISABLE_DEFAULT_ADDONS: "true", CAMOFOX_PORT: String(config.port), HANDLER_TIMEOUT_MS: String(config.handlerTimeoutMs), MAX_CONCURRENT_PER_USER: String(config.maxConcurrentPerUser), MAX_SESSIONS: String(config.maxSessions), MAX_TABS_GLOBAL: String(config.maxTabsGlobal), MAX_TABS_PER_SESSION: String(config.maxTabsPerSession), NAVIGATE_TIMEOUT_MS: String(config.navigateTimeoutMs), SESSION_TIMEOUT_MS: String(config.sessionTimeoutMs), TAB_INACTIVITY_MS: String(config.tabInactivityMs) },
       stdio: "ignore", windowsHide: true,
     })
     for (let attempt = 0; attempt < 30; attempt += 1) {
-      if (await Camofox.healthy()) return new Camofox(server, config)
+      if (await Camofox.healthy(config)) return new Camofox(server, config)
       await delay(1_000)
     }
     server.kill()
@@ -115,7 +120,7 @@ export class Camofox {
   public async close(tabId: string | undefined, restartBrowser = false): Promise<void> {
     if (restartBrowser) {
       // HTTP 403 代表目前瀏覽器整體狀態不可用，才需要完整重啟。
-      await Camofox.restart(this.server)
+      await Camofox.restart(this.server, this.config)
       return
     }
     try {
@@ -131,7 +136,7 @@ export class Camofox {
     }
   }
 
-  private static async restart(server: ChildProcess | undefined): Promise<void> {
+  private static async restart(server: ChildProcess | undefined, config: ResolvedCamofoxConfig): Promise<void> {
     await delay(recoveryCooldownMs)
     if (server !== undefined) {
       await Camofox.stopOwnedServer(server)
@@ -140,11 +145,11 @@ export class Camofox {
     if (process.platform !== "win32") throw new CrawlError("Cannot restart an externally started Camofox server on this platform.")
     // 外部服務沒有 child handle，只能依監聽連接埠找出完整程序樹並關閉。
     const script = path.resolve(process.cwd(), "scripts", "stop-camofox.ps1")
-    const stopProcess = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script], { stdio: "ignore", windowsHide: true })
+    const stopProcess = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Port", String(config.port)], { stdio: "ignore", windowsHide: true })
     await waitForProcessExit(stopProcess)
     if (stopProcess.exitCode !== 0) throw new CrawlError("Failed to stop the existing Camofox browser.")
     for (let attempt = 0; attempt < 50; attempt += 1) {
-      if (!(await Camofox.healthy())) return
+      if (!(await Camofox.healthy(config))) return
       await delay(100)
     }
     throw new CrawlError("Camofox remained available after the browser restart.")
@@ -156,8 +161,8 @@ export class Camofox {
     await waitForProcessExit(server)
   }
 
-  private static async healthy(): Promise<boolean> {
-    try { return (await fetch(`${origin}/health`, { signal: AbortSignal.timeout(1_000) })).ok } catch { return false }
+  private static async healthy(config: ResolvedCamofoxConfig): Promise<boolean> {
+    try { return (await fetch(`${controlOrigin(config.port)}/health`, { signal: AbortSignal.timeout(1_000) })).ok } catch { return false }
   }
 
   private tabOwner(tabId: string): string {
@@ -171,8 +176,8 @@ export class Camofox {
     let response: Response
     try {
       response = init.body === undefined
-        ? await fetch(`${origin}${path}`, { method: init.method, signal: AbortSignal.timeout(timeoutMs) })
-        : await fetch(`${origin}${path}`, { body: JSON.stringify(init.body), headers: { "content-type": "application/json" }, method: init.method, signal: AbortSignal.timeout(timeoutMs) })
+        ? await fetch(`${this.origin}${path}`, { method: init.method, signal: AbortSignal.timeout(timeoutMs) })
+        : await fetch(`${this.origin}${path}`, { body: JSON.stringify(init.body), headers: { "content-type": "application/json" }, method: init.method, signal: AbortSignal.timeout(timeoutMs) })
     } catch (error) {
       // 導航使用較短的逾時，並轉成可被上層辨識的重啟原因。
       if (init.timeoutMs !== undefined && error instanceof Error && error.name === "TimeoutError") {

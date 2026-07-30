@@ -104,6 +104,7 @@ test("parseOptions uses six paced concurrent tabs", () => {
     maxTabsGlobal: 6,
     maxTabsPerSession: 3,
     navigateTimeoutMs: 5_000,
+    port: 9_580,
     sessionTimeoutMs: 180_000,
     tabInactivityMs: 180_000,
   })
@@ -134,12 +135,12 @@ test("loadCrawlConfig parses the documented YAML settings", async (context) => {
   const directory = await mkdtemp(path.join(tmpdir(), "twkan-exporter-"))
   context.after(async () => rm(directory, { force: true, recursive: true }))
   const configFile = path.join(directory, "book.yaml")
-  await writeFile(configFile, "book: \"90206\"\nconcurrency: 2\ndelayMs: 2000\nignore: \"1-2,8\"\noutput: output/test\nretries: 4\ncamofox:\n  maxSessions: 3\n  maxTabsGlobal: 9\n  navigateTimeoutMs: 7000\n  crashReportEnabled: false\n", "utf8")
+  await writeFile(configFile, "book: \"90206\"\nconcurrency: 2\ndelayMs: 2000\nignore: \"1-2,8\"\noutput: output/test\nretries: 4\ncamofox:\n  maxSessions: 3\n  maxTabsGlobal: 9\n  navigateTimeoutMs: 7000\n  port: 9590\n  crashReportEnabled: false\n", "utf8")
 
   const config = await loadCrawlConfig(configFile)
   assert.deepEqual(config, {
     book: "90206",
-    camofox: { crashReportEnabled: false, maxSessions: 3, maxTabsGlobal: 9, navigateTimeoutMs: 7_000 },
+    camofox: { crashReportEnabled: false, maxSessions: 3, maxTabsGlobal: 9, navigateTimeoutMs: 7_000, port: 9_590 },
     concurrency: 2,
     delayMs: 2_000,
     ignore: "1-2,8",

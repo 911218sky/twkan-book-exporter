@@ -24,6 +24,7 @@ export type CamofoxConfig = {
   readonly maxTabsGlobal?: number
   readonly maxTabsPerSession?: number
   readonly navigateTimeoutMs?: number
+  readonly port?: number
   readonly sessionTimeoutMs?: number
   readonly tabInactivityMs?: number
 }
@@ -62,6 +63,7 @@ function optionalCamofoxConfig(value: unknown): CamofoxConfig | undefined {
   const maxTabsGlobal = optionalNumber(value["maxTabsGlobal"], "camofox.maxTabsGlobal")
   const maxTabsPerSession = optionalNumber(value["maxTabsPerSession"], "camofox.maxTabsPerSession")
   const navigateTimeoutMs = optionalNumber(value["navigateTimeoutMs"], "camofox.navigateTimeoutMs")
+  const port = optionalNumber(value["port"], "camofox.port")
   const sessionTimeoutMs = optionalNumber(value["sessionTimeoutMs"], "camofox.sessionTimeoutMs")
   const tabInactivityMs = optionalNumber(value["tabInactivityMs"], "camofox.tabInactivityMs")
   return {
@@ -74,6 +76,7 @@ function optionalCamofoxConfig(value: unknown): CamofoxConfig | undefined {
     ...(maxTabsGlobal === undefined ? {} : { maxTabsGlobal }),
     ...(maxTabsPerSession === undefined ? {} : { maxTabsPerSession }),
     ...(navigateTimeoutMs === undefined ? {} : { navigateTimeoutMs }),
+    ...(port === undefined ? {} : { port }),
     ...(sessionTimeoutMs === undefined ? {} : { sessionTimeoutMs }),
     ...(tabInactivityMs === undefined ? {} : { tabInactivityMs }),
   }

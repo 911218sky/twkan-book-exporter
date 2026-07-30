@@ -24,6 +24,7 @@ export type ResolvedCamofoxConfig = {
   readonly maxTabsGlobal: number
   readonly maxTabsPerSession: number
   readonly navigateTimeoutMs: number
+  readonly port: number
   readonly sessionTimeoutMs: number
   readonly tabInactivityMs: number
 }
@@ -53,6 +54,7 @@ function resolveCamofoxConfig(config: CamofoxConfig | undefined): ResolvedCamofo
     maxTabsGlobal: positive(config?.maxTabsGlobal, 6, "camofox.maxTabsGlobal"),
     maxTabsPerSession: positive(config?.maxTabsPerSession, 3, "camofox.maxTabsPerSession"),
     navigateTimeoutMs: positive(config?.navigateTimeoutMs, 5_000, "camofox.navigateTimeoutMs"),
+    port: positive(config?.port, 9_580, "camofox.port"),
     sessionTimeoutMs: positive(config?.sessionTimeoutMs, 180_000, "camofox.sessionTimeoutMs"),
     tabInactivityMs: positive(config?.tabInactivityMs, 180_000, "camofox.tabInactivityMs"),
   }
